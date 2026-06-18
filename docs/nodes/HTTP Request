@@ -1,0 +1,587 @@
+# n8n — HTTP Request Node : options de l’onglet **Settings**
+
+Documentation opérationnelle pour comprendre et configurer les options visibles dans l’onglet **Settings** du node **HTTP Request** dans n8n.
+
+> Périmètre : options générales du node visibles dans l’écran fourni : **SSL Certificates**, **Always Output Data**, **Execute Once**, **Retry On Fail**, **On Error**, **Notes**, **Display Note in Flow?**  
+> Le node **HTTP Request** sert à effectuer des appels HTTP vers des APIs ou services exposant une API REST.
+
+---
+
+## 1. SSL Certificates
+
+### Rôle
+
+Active l’utilisation d’un **certificat SSL client** pour la requête HTTP.
+
+Cette option est utile quand l’API appelée impose une authentification par certificat, par exemple en **mTLS**.
+
+### Quand l’utiliser
+
+Utilise cette option si l’API externe demande :
+
+- un certificat client ;
+- une clé privée ;
+- une authentification mTLS ;
+- une connexion sécurisée par certificat côté client.
+
+### Configuration minimale
+
+1. Active **SSL Certificates**.
+2. Va dans les paramètres du node.
+3. Sélectionne ou crée un credential de type certificat SSL.
+4. Renseigne les éléments demandés par n8n :
+   - certificat public ;
+   - clé privée ;
+   - éventuellement certificat CA selon le cas.
+
+### À ne pas confondre avec
+
+**SSL Certificates** n’est pas la même chose que l’option permettant d’ignorer les erreurs SSL.
+
+- **SSL Certificates** : envoie un certificat client à l’API.
+- **Ignore SSL Issues** : ignore certains problèmes de validation SSL côté serveur.
+
+### Risques
+
+- Ne colle jamais de clé privée directement dans un champ non sécurisé.
+- Utilise les **credentials n8n**.
+- Vérifie que le certificat est valide et non expiré.
+- Ne désactive pas la validation SSL en production sauf nécessité maîtrisée.
+
+---
+
+## 2. Always Output Data
+
+### Rôle
+
+Force le node à produire une sortie même lorsqu’il ne retourne aucune donnée.
+
+Sans cette option, si le node ne produit aucun item, les nodes suivants peuvent ne pas s’exécuter.
+
+### Quand l’utiliser
+
+Active cette option si :
+
+- l’API peut répondre avec un corps vide ;
+- l’API retourne parfois un statut `204 No Content` ;
+- tu veux que le workflow continue même sans données ;
+- tu veux garantir qu’un node suivant reçoive au moins un item.
+
+### Exemple de cas utile
+
+Une API de suppression répond :
+
+```http
+204 No Content
+```
+
+Avec **Always Output Data** activé, le workflow peut continuer vers un node de log ou de notification.
+
+### Risques
+
+Cette option peut masquer un problème.
+
+Exemple : tu attends une réponse JSON avec un identifiant, mais l’API retourne vide. Le workflow continue quand même avec un item vide.
+
+### Bonne pratique
+
+Après ce node, ajoute un node **IF** pour vérifier que les données attendues existent.
+
+Exemple d’expression n8n :
+
+```js
+{{ $json.id !== undefined }}
+```
+
+---
+
+## 3. Execute Once
+
+### Rôle
+
+Exécute le node une seule fois, même si plusieurs items arrivent en entrée.
+
+Le node utilise alors uniquement le premier item d’entrée.
+
+### Quand l’utiliser
+
+Active cette option pour :
+
+- récupérer un token une seule fois ;
+- appeler une API de configuration globale ;
+- charger des paramètres communs ;
+- éviter de faire une requête HTTP pour chaque item.
+
+### Exemple
+
+Entrée du node :
+
+```json
+[
+  { "json": { "customerId": 1 } },
+  { "json": { "customerId": 2 } },
+  { "json": { "customerId": 3 } }
+]
+```
+
+Avec **Execute Once** activé, le HTTP Request s’exécute une seule fois, basé sur le premier item.
+
+### Quand ne pas l’utiliser
+
+Ne l’active pas si tu dois faire une requête par :
+
+- utilisateur ;
+- commande ;
+- ligne de fichier ;
+- produit ;
+- ticket ;
+- contact CRM.
+
+### Test rapide
+
+Ajoute un node **Set/Edit Fields** avant le HTTP Request avec plusieurs items, puis vérifie dans l’exécution combien de requêtes ont réellement été faites.
+
+---
+
+## 4. Retry On Fail
+
+### Rôle
+
+Demande à n8n de réessayer automatiquement le node en cas d’échec.
+
+Quand cette option est activée, n8n permet de configurer notamment :
+
+- le nombre maximal de tentatives ;
+- le délai entre les tentatives.
+
+### Quand l’utiliser
+
+Active cette option pour les erreurs temporaires :
+
+- timeout ;
+- erreur réseau ;
+- API momentanément indisponible ;
+- erreur HTTP `429 Too Many Requests` ;
+- erreur HTTP `502`, `503`, `504` ;
+- service externe instable.
+
+### Configuration recommandée
+
+Pour un appel API standard :
+
+```text
+Retry On Fail: ON
+Max Tries: 3
+Wait Between Tries (ms): 1000 à 5000
+```
+
+Pour une API avec rate limit strict :
+
+```text
+Retry On Fail: ON
+Max Tries: 5
+Wait Between Tries (ms): supérieur à la limite imposée par l’API
+```
+
+Exemple : si l’API accepte une requête par seconde, mets au moins :
+
+```text
+Wait Between Tries (ms): 1000
+```
+
+### Risques
+
+- Trop de retries peuvent aggraver un rate limit.
+- Une requête non idempotente peut créer des doublons.
+
+Exemples de requêtes à traiter avec prudence :
+
+- création de commande ;
+- création de paiement ;
+- envoi d’email ;
+- création de ticket ;
+- écriture en base de données.
+
+### Bonne pratique
+
+Pour les actions critiques, utilise une clé d’idempotence quand l’API le permet.
+
+Exemple d’en-tête HTTP :
+
+```text
+Idempotency-Key: {{$execution.id}}-{{$itemIndex}}
+```
+
+---
+
+## 5. On Error
+
+### Rôle
+
+Détermine le comportement du workflow si le HTTP Request échoue.
+
+### Option : Stop Workflow
+
+Le workflow s’arrête immédiatement si le node échoue.
+
+#### Quand l’utiliser
+
+Utilise **Stop Workflow** si l’appel HTTP est indispensable.
+
+Exemples :
+
+- paiement ;
+- écriture en base ;
+- création d’un utilisateur ;
+- appel de conformité ;
+- étape obligatoire avant la suite du workflow.
+
+#### Avantage
+
+Le workflow ne continue pas avec des données invalides.
+
+#### Inconvénient
+
+Une erreur temporaire peut bloquer tout le traitement.
+
+---
+
+### Option : Continue
+
+Le workflow continue même si le node échoue.
+
+#### Quand l’utiliser
+
+Utilise cette option si l’erreur n’est pas bloquante.
+
+Exemples :
+
+- enrichissement optionnel ;
+- notification secondaire ;
+- tracking analytics ;
+- récupération d’informations non critiques.
+
+#### Risque
+
+Les nodes suivants peuvent recevoir des données incomplètes.
+
+---
+
+### Option : Continue using error output
+
+Le workflow continue en envoyant l’erreur vers une sortie dédiée.
+
+#### Quand l’utiliser
+
+C’est souvent l’option la plus propre pour les workflows de production.
+
+Elle permet de traiter séparément :
+
+- la sortie normale ;
+- la sortie erreur.
+
+#### Exemple d’architecture
+
+```text
+HTTP Request
+├── Success Output → traitement normal
+└── Error Output   → log erreur → notification Slack/Email → stockage incident
+```
+
+#### Données à logger
+
+Dans la branche erreur, conserve au minimum :
+
+```json
+{
+  "workflowId": "ID du workflow",
+  "executionId": "ID de l’exécution",
+  "node": "HTTP Request",
+  "url": "URL appelée",
+  "statusCode": "code HTTP si disponible",
+  "message": "message d’erreur",
+  "input": "données utiles sans secrets"
+}
+```
+
+### Bonne pratique
+
+Pour un workflow de production :
+
+```text
+On Error: Continue using error output
+Retry On Fail: ON
+Max Tries: 3
+Wait Between Tries (ms): 1000 à 5000
+```
+
+---
+
+## 6. Notes
+
+### Rôle
+
+Champ libre pour documenter le node.
+
+### Pourquoi l’utiliser
+
+Les notes sont utiles pour :
+
+- expliquer pourquoi le node existe ;
+- préciser l’API appelée ;
+- indiquer les limites connues ;
+- documenter les credentials nécessaires ;
+- prévenir les autres utilisateurs d’un risque.
+
+### Exemple de note
+
+```text
+Appelle l’API CRM pour créer ou mettre à jour un contact.
+Credential utilisé : CRM Production.
+Attention : rate limit 100 requêtes / minute.
+En cas d’erreur, la sortie error est envoyée vers le workflow de monitoring.
+```
+
+---
+
+## 7. Display Note in Flow?
+
+### Rôle
+
+Affiche la note directement dans le canvas du workflow.
+
+### Quand l’activer
+
+Active cette option si la note contient une information importante pour comprendre le workflow rapidement.
+
+Exemples :
+
+- prérequis ;
+- comportement non évident ;
+- dépendance à un service externe ;
+- avertissement sur un effet de bord ;
+- limite de rate limit.
+
+### Bonne pratique
+
+Active cette option sur les nodes critiques, par exemple :
+
+- paiement ;
+- suppression de données ;
+- écriture en base ;
+- appel à une API externe sensible ;
+- webhook public ;
+- node avec comportement conditionnel complexe.
+
+---
+
+# Recommandations de configuration par scénario
+
+## Scénario A — Appel API simple en lecture
+
+```text
+SSL Certificates: OFF
+Always Output Data: OFF
+Execute Once: OFF
+Retry On Fail: ON
+Max Tries: 3
+Wait Between Tries (ms): 1000
+On Error: Stop Workflow ou Continue using error output
+```
+
+Utilise cette configuration pour :
+
+- récupérer un contact ;
+- lire une commande ;
+- interroger un service externe ;
+- récupérer une liste.
+
+---
+
+## Scénario B — Appel API critique en écriture
+
+```text
+SSL Certificates: selon API
+Always Output Data: OFF
+Execute Once: OFF
+Retry On Fail: ON avec prudence
+Max Tries: 2 ou 3
+Wait Between Tries (ms): 2000 à 5000
+On Error: Stop Workflow ou Continue using error output
+```
+
+Ajoute si possible :
+
+```text
+Idempotency-Key
+```
+
+À utiliser pour :
+
+- création de paiement ;
+- création de commande ;
+- écriture dans un CRM ;
+- création d’un utilisateur.
+
+---
+
+## Scénario C — API avec rate limit
+
+```text
+Retry On Fail: ON
+Max Tries: 5
+Wait Between Tries (ms): selon la limite API
+On Error: Continue using error output
+```
+
+Ajoute si nécessaire :
+
+```text
+Loop Over Items
+Wait
+Batching dans HTTP Request si disponible dans ta version n8n
+```
+
+Objectif : éviter de saturer l’API appelée.
+
+---
+
+## Scénario D — Appel unique global
+
+```text
+Execute Once: ON
+Retry On Fail: ON
+On Error: Stop Workflow
+```
+
+À utiliser pour :
+
+- récupérer un token ;
+- charger une configuration ;
+- récupérer des métadonnées globales ;
+- faire un appel API nécessaire une seule fois.
+
+---
+
+# Checklist de test
+
+Avant de mettre le workflow en production :
+
+- [ ] Le node fonctionne avec une réponse HTTP `200`.
+- [ ] Le node gère une réponse vide.
+- [ ] Le node gère une erreur HTTP `400`.
+- [ ] Le node gère une erreur HTTP `401` ou `403`.
+- [ ] Le node gère une erreur HTTP `429`.
+- [ ] Le node gère une erreur HTTP `500`.
+- [ ] Les retries ne créent pas de doublons.
+- [ ] Les secrets ne sont jamais écrits dans les logs.
+- [ ] Les credentials n8n sont utilisés.
+- [ ] La branche erreur est testée.
+- [ ] Les notes expliquent les points sensibles.
+- [ ] Le comportement avec plusieurs items d’entrée est validé.
+- [ ] L’option **Execute Once** est désactivée si une requête par item est attendue.
+
+---
+
+# Erreurs fréquentes et corrections
+
+## Erreur : le node ne s’exécute qu’une seule fois
+
+### Cause probable
+
+**Execute Once** est activé.
+
+### Correction
+
+Désactive **Execute Once** si tu veux faire une requête par item.
+
+---
+
+## Erreur : les nodes suivants ne s’exécutent pas
+
+### Cause probable
+
+Le HTTP Request ne retourne aucun item.
+
+### Correction
+
+Active **Always Output Data** ou vérifie que l’API retourne bien une réponse exploitable.
+
+---
+
+## Erreur : trop de requêtes / HTTP 429
+
+### Cause probable
+
+Tu dépasses la limite de l’API appelée.
+
+### Correction
+
+- Active **Retry On Fail**.
+- Augmente **Wait Between Tries (ms)**.
+- Ajoute un node **Wait**.
+- Traite les items par lots.
+
+---
+
+## Erreur : certificat SSL demandé
+
+### Cause probable
+
+L’API exige un certificat client.
+
+### Correction
+
+- Active **SSL Certificates**.
+- Configure le credential SSL.
+- Vérifie la validité du certificat.
+- Vérifie que la clé privée correspond au certificat.
+
+---
+
+## Erreur : workflow arrêté après une erreur HTTP
+
+### Cause probable
+
+**On Error** est configuré sur **Stop Workflow**.
+
+### Correction
+
+Utilise **Continue using error output** si tu veux gérer l’erreur dans une branche séparée.
+
+---
+
+# Configuration recommandée par défaut
+
+Pour la majorité des workflows API en production :
+
+```text
+SSL Certificates: OFF sauf si exigé par l’API
+Always Output Data: OFF
+Execute Once: OFF
+Retry On Fail: ON
+Max Tries: 3
+Wait Between Tries (ms): 1000 à 5000
+On Error: Continue using error output
+Notes: documenter l’API, les credentials et les limites
+Display Note in Flow?: ON pour les nodes critiques
+```
+
+---
+
+# Sources officielles
+
+- n8n Docs — HTTP Request node : https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.httprequest/
+- n8n Docs — HTTP Request credentials : https://docs.n8n.io/integrations/builtin/credentials/httprequest/
+- n8n Docs — HTTP Request common issues : https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.httprequest/common-issues/
+- n8n Docs — Handling API rate limits : https://docs.n8n.io/integrations/builtin/rate-limits/
+- n8n Docs — Nodes : https://docs.n8n.io/workflows/components/nodes/
+- n8n Docs — Error handling : https://docs.n8n.io/flow-logic/error-handling/
+
+---
+
+# Notes de maintenance
+
+- Vérifie la documentation officielle n8n si ton interface ne correspond pas exactement à ces options.
+- Certaines options peuvent varier selon la version de n8n.
+- En cas de doute, teste sur un workflow de brouillon avant de modifier un workflow actif.
